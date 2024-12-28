@@ -1,5 +1,5 @@
 # Usamos una imagen base con soporte para la GPU
-FROM nvidia/cuda:12.1.1-base-ubuntu20.04
+FROM nvidia/cuda:12.4.0-base-ubuntu20.04
 
 # Instalar paquetes necesarios
 RUN apt-get update && apt-get install -y \
@@ -7,25 +7,43 @@ RUN apt-get update && apt-get install -y \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Crear un usuario llamado dockeruser y darle permisos sudo
-RUN useradd -m -s /bin/bash dockeruser && \
-    echo "dockeruser:dockerpassword" | chpasswd && \
-    usermod -aG sudo dockeruser && \
-    echo "dockeruser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
-    mkdir /home/dockeruser/.ssh && \
-    chown -R dockeruser:dockeruser /home/dockeruser/.ssh
+# Crear el grupo para los desarrolladores
+RUN groupadd sharedgroup
+
+# Copiar el archivo de usuarios y el archivo de claves públicas al contenedor
+COPY users.txt /tmp/users.txt
+COPY authorized_keys.txt /tmp/authorized_keys.txt
+
+# Crear los usuarios dinámicamente a partir del archivo users.txt
+RUN while IFS= read -r user && IFS= read -r key <&3; do \
+    useradd -M -s /bin/bash -G sharedgroup "$user" && \
+    mkdir -p "/home/$user/.ssh" && \
+    echo "$key" > "/home/$user/.ssh/authorized_keys" && \
+    chmod 700 "/home/$user/.ssh" && \
+    chmod 600 "/home/$user/.ssh/authorized_keys" && \
+    chown -R "$user:sharedgroup" "/home/$user"; \
+done < /tmp/users.txt 3< /tmp/authorized_keys.txt
+
+# Crear una carpeta compartida accesible por todos los usuarios del grupo sharedgroup
+RUN mkdir -p /shared && \
+    chown root:sharedgroup /shared && \
+    chmod 775 /shared
 
 # Configurar el servidor SSH
 RUN mkdir /var/run/sshd && \
     sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's|#AuthorizedKeysFile.*|AuthorizedKeysFile /home/%u/.ssh/authorized_keys|' /etc/ssh/sshd_config
+
+# Configurar el directorio predeterminado para los usuarios
+RUN echo "cd /shared" >> /etc/bash.bashrc
 
 # Exponer el puerto SSH
 EXPOSE 22
 
 # Agregar el soporte de NVIDIA
-RUN apt-get update && apt-get install -y nvidia-utils-525 && \
+RUN apt-get update && apt-get install -y nvidia-utils-550 && \
     echo "export PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:$PATH" >> /etc/bash.bashrc
 
 # Comando para iniciar el servidor SSH

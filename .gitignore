@@ -1,1 +1,3 @@
-authorized_keys
+authorized_keys.txt
+users.txt
+shared/
