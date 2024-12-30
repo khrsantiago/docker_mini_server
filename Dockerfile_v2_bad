@@ -1,0 +1,82 @@
+# NO ESTA FUNCIOANNADO BIEN ESTE DOCKERFILE
+
+# Usamos una imagen base con soporte para la GPU
+FROM nvidia/cuda:12.4.0-base-ubuntu22.04
+
+# Instalar paquetes necesarios y herramientas básicas
+RUN rm /etc/apt/sources.list.d/cuda* && \
+    apt-get update && apt-get install -y \
+    zsh curl wget git build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev libffi-dev \
+    openssh-server sudo software-properties-common \
+    docker.io zsh-autosuggestions zsh-syntax-highlighting && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Cambiar la shell predeterminada a Zsh para root
+RUN chsh -s /usr/bin/zsh root
+
+# Instalar Pyenv
+RUN curl https://pyenv.run | bash && \
+    echo 'export PYENV_ROOT="/root/.pyenv"' >> ~/.zshrc && \
+    echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.zshrc && \
+    echo 'eval "$(pyenv init --path)"' >> ~/.zshrc && \
+    echo 'eval "$(pyenv virtualenv-init -)"' >> ~/.zshrc && \
+    bash -c "source ~/.zshrc && pyenv install 3.11.10 && pyenv global 3.11.10"
+
+# Instalar Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+
+# Configuración global de Zsh para nuevos usuarios
+RUN mkdir -p /etc/skel && \
+    echo 'export PYENV_ROOT="/root/.pyenv"' >> /etc/skel/.zshrc && \
+    echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> /etc/skel/.zshrc && \
+    echo 'eval "$(pyenv init --path)"' >> /etc/skel/.zshrc && \
+    echo 'eval "$(pyenv virtualenv-init -)"' >> /etc/skel/.zshrc && \
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> /etc/skel/.zshrc && \
+    echo 'source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh' >> /etc/skel/.zshrc && \
+    echo 'source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' >> /etc/skel/.zshrc && \
+    echo 'alias pip="pip3"' >> /etc/skel/.zshrc && \
+    echo 'alias venv="python3 -m venv"' >> /etc/skel/.zshrc
+
+# Crear el grupo para los desarrolladores
+RUN groupadd sharedgroup
+
+# Copiar el archivo de usuarios y claves públicas al contenedor
+COPY users.txt /tmp/users.txt
+COPY authorized_keys.txt /tmp/authorized_keys.txt
+
+# Crear los usuarios dinámicamente a partir del archivo users.txt
+RUN while IFS= read -r user && IFS= read -r key <&3; do \
+    useradd -M -s /usr/bin/zsh -G sharedgroup "$user" && \
+    mkdir -p "/home/$user/.ssh" && \
+    cp -r /etc/skel/.zshrc "/home/$user/.zshrc" && \
+    echo "$key" > "/home/$user/.ssh/authorized_keys" && \
+    chmod 700 "/home/$user/.ssh" && \
+    chmod 600 "/home/$user/.ssh/authorized_keys" && \
+    chown -R "$user:sharedgroup" "/home/$user"; \
+done < /tmp/users.txt 3< /tmp/authorized_keys.txt
+
+# Crear una carpeta compartida accesible por todos los usuarios del grupo sharedgroup
+RUN mkdir -p /shared && \
+    chown root:sharedgroup /shared && \
+    chmod 775 /shared
+
+# Configurar el servidor SSH
+RUN mkdir /var/run/sshd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's|#AuthorizedKeysFile.*|AuthorizedKeysFile /home/%u/.ssh/authorized_keys|' /etc/ssh/sshd_config
+
+# Configurar el directorio predeterminado para los usuarios
+RUN echo "cd /shared" >> /etc/skel/.zshrc
+
+# Exponer el puerto SSH
+EXPOSE 22
+
+# Agregar el soporte de NVIDIA
+RUN echo "export PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:$PATH" >> /etc/zsh/zshrc
+
+# Comando para iniciar el servidor SSH
+CMD ["/usr/sbin/sshd", "-D"]
